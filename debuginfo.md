@@ -1,6 +1,10 @@
 # Game Boy ROM debug information format specification
 
-Version 0.1.0 — 24 September 2023
+Version 0.2.0 — 8 October 2023
+
+Version history for this document is kept in [a companion document][version].
+
+[version]: history.md
 
 #### Copyright
 
@@ -32,8 +36,7 @@ specific line of source code, and thus any attempt at rendering that line is a b
 the actual source text.
 This issue is compounded when the source code is not in assembly, but in a higher-level language such as C:
 recovering the original source code would require automated decompilation, and this is infeasible at the level of
-reconstruction generally desired by developers (for example, comments and variable names cannot be reconstructed at
-all).
+reconstruction generally desired by developers (for example, comments and variable names cannot be recovered at all).
 
 Therefore, a debug information file can contain references to source files, symbol tables, and other useful
 information that an analyzer (such as an interactive debugger) may need to properly process, analyze and display the
@@ -82,8 +85,11 @@ These conventions are followed throughout the document for consistency:
 * Fields in a structure are shown with a running offset for clarity.
   The offset of the first field is always zero, and the offset of subsequent fields is the offset of the previous
   field plus its size.
-  Bit-packed fields are shown in a similar layout, indicating the starting bit position for each subfield and the
-  number of bits that make up the subfield; in this case, bit 0 is always the least significant bit.
+* If a field contains bit-packed subfields, these are shown in a similar layout, indicating the starting bit position
+  for each subfield and the number of bits that make up the subfield.
+  In this case, bit 0 is always the least significant bit.
+  If the field spans multiple bytes, the first byte contains bits 0-7, the next byte contains bits 8-15, and so on.
+  (This is consistent with interpreting the whole field as a wider value in little-endian form.)
 * Single-bit subfields in bit-packed fields are often referred to as "flags"; in this case, it is often stated that
   the flag is "cleared" or "set".
   A flag (i.e., a single-bit value) is set if its value is 1, and it is cleared if its value is 0.
@@ -91,6 +97,11 @@ These conventions are followed throughout the document for consistency:
   In the interest of keeping the specification as generic as possible, the process or program that generates a debug
   information file is called the "generator", and the process or program that takes such a file and processes it in
   any manner is called the "consumer".
+* The document does not assume that its implementations will be written in any specific programming language.
+  Therefore, names of components (such as block types, fields of structures or values in enumerations) are always
+  given as simple English words or phrases, not as syntactically valid identifiers for some programming language.
+  Implementations are encouraged to define identifiers that are as similar to the names given in the document as
+  possible, abbreviating them as needed.
 * The keywords "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT
   RECOMMENDED", "MAY" and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119][rfc2119] when,
   and only when, they appear in all capitals, as shown here.
@@ -113,7 +124,7 @@ document the purpose and contents of said blocks, as well as their [identificati
 Each block has a type, which defines what data the block in question can contain.
 The type of each block is given in the [master block table][sect3.5].
 Some blocks contain raw data, but some others contain tables.
-(A table is an array of elements, all the same size, laid out one after the other in the file.)
+(A table is an array of elements, all the same size, laid out one after the other in the file, without gaps.)
 All tables are indexed starting from zero: the first entry in a table is entry number 0, the next one is entry number
 1, and so on.
 (This also applies to the master block table itself: the first block in the table is block number 0.)
@@ -146,7 +157,7 @@ This special value has all bits set, and its numeric value is the maximum that c
 size: for example, since block indexes are 4-byte values, the invalid block index is $FFFFFFFF.
 
 Invalid values are also used wherever a null value would be needed.
-(Therefore, **zero is not used as the null value**, allowing its use as the starting index of tables.)
+(Therefore, **zero is not used as the null value**, allowing zero to be used as the starting index of tables.)
 For example, the [master block table][sect3.5] contains a linked block field for each block; if a block doesn't have
 any linked block to reference, the linked block for that block is set to the invalid block index.
 In order to avoid confusion, this value is never called a null value; the term "invalid" is used instead in all cases,
@@ -154,8 +165,8 @@ even when the true meaning of the value is to represent a null value.
 
 #### Reserved fields
 
-Reserved fields are fields of structures with no designated meaning in this specification, reserved as padding or for
-future versions of the specification.
+Reserved fields are fields of structures with no designated meaning in this version of the specification, reserved as
+padding or for future versions of the specification.
 Reserved fields MUST be filled with $FF bytes when the debug information file is generated; reserved subfields in
 bit-packed fields MUST be set to an all-bits-set value (i.e., the maximum value the subfield could have if it was
 interpreted as a number).
@@ -175,26 +186,66 @@ These reserved padding bytes MUST be handled as specified above.
 #### Strings
 
 A string is a sequence of characters of known length.
-Strings MUST be encoded in [UTF-8][rfc3629] without any embedded null characters ($00 bytes) and without any
-surrogates (codepoints $D800 through $DFFF).
-The maximum length of a string is 65,535 bytes.
+Strings MUST be encoded in UTF-8, without any embedded null characters ($00 bytes) and without any surrogates
+(codepoints $D800 through $DFFF); they MUST NOT contain invalid, partial or overlong UTF-8 encodings.
+(The UTF-8 encoding is defined by several equivalent specification documents, such as the IETF's [RFC 3629][rfc3629].)
+The maximum length of a string is $FFFF (65,535) bytes.
 
 Strings are referenced through [string table blocks][sect4.2], which contain information about the length and location
 of each string used by the file.
-As the length of each string is explicitly encoded in the file, null terminators are not necessary; generators MAY
-emit null terminator ($00) bytes after each string, but consumers MUST NOT expect to find these null terminator bytes.
+As the length of each string is explicitly encoded in the file, it is not necessary to use a null terminator (i.e., a
+$00 byte at the end of the string) to determine that length.
+However, generators MUST emit the terminator, so that consumers that expect to deal with null-terminated strings can
+use the data in the file directly.
+(Null terminators are not considered part of the string, and they are not included in its length.)
 
 Whenever strings are compared, two strings MUST be considered different if they don't have the exact same byte
 representation (or equivalently, the same character codepoints).
 In particular, strings that differ only in case MUST NOT be considered equal; all string comparisons are
 case-sensitive.
+Likewise, strings that use different character codepoints to represent the same glyphs (e.g., using different Unicode
+normalization forms) MUST NOT be considered equal.
 
 [rfc3629]: https://www.rfc-editor.org/rfc/rfc3629
+
+#### ROM image and program image
+
+The terms "ROM image" and "program image" are used throughout this document to refer to the program's addressing space
+and contents (code and data).
+
+The ROM image is the data contained in the cartridge, typically in read-only memory (hence the name), including all of
+the program's code and data.
+It is a serialized view of the program's contents, represented by a ROM image file, and it only contains code and data
+that will also exist before the program is run.
+
+On the other hand, the program image is the view the program has of the system's addressing space while it executes.
+It contains the ROM image's contents, mapped to one or more ROM banks, as well as other regions of memory (such as
+console RAM, cartridge RAM or memory-mapped I/O ports).
+The program image can contain banked and unbanked regions of memory; the program will only be able to access a limited
+number of banks at once from banked regions of memory, but all banks are considered to be part of the program image
+(as they are accessible to the program).
+
+#### Overlay file
+
+An overlay file is a ROM image file used as a base when building another one, so that the new ROM image will only
+modify portions of the overlay file (i.e., it will be overlaid on top of the overlay file).
+
+In the context of this document, the term "overlay file" is only used to refer to the base file used to build the ROM
+image file that a particular debug information file is associated with.
+While the ROM image file associated with the debug information file can itself be used as an overlay file to build
+some other ROM image file, the debug information file does not record that usage; therefore, that scenario is not
+considered throughout this specification.
+
+Overlay files are optional, and many toolchains do not allow the use of an overlay file to build a ROM image file.
+It is possible, and in fact likely, that a ROM image file will not have an overlay file.
+The presence of an overlay file MUST NOT be determined by comparing ROM image files for similarity or any other
+heuristic methods: overlay files are part of the build configuration.
+Therefore, if no overlay file is configured when the ROM image file is built, there will not be an overlay file.
 
 ### 3.3. Blocks
 
 Blocks are the main data unit of debug information files.
-Blocks are listed in the [master block table][sect3.5]; consumers can determine which information is available to them
+Blocks are listed in the [master block table][sect3.5]; consumers can determine what information is available to them
 in a debug information file by scanning said table.
 Unless a specific block requires another block to be present (for example, a [string table block][sect4.2] requires a
 [data block][sect4.1] to contain the actual string data), there are no mandatory blocks: all of the information a
@@ -239,9 +290,9 @@ location and size of the master block table are defined in the [header][sect3.4]
 
 ### 3.4. Header
 
-The header of a debug information file is a 32-byte structure that is located at the beginning of the file, which
-allows consumers to locate and process the rest of the information contained in the file.
-The fixed size of this header implies that a debug information file MUST be at least 32 bytes long.
+The header of a debug information file is a structure that is located at the beginning of the file, which allows
+consumers to locate and process the rest of the information contained in the file.
+(The fixed placement of this header implies that a debug information file MUST be at least 32 bytes long.)
 
 The layout of the header is the following:
 
@@ -270,13 +321,13 @@ The layout of the header is the following:
   Using a value greater than 24 for this field is NOT RECOMMENDED.
 * **[Master block table][sect3.5] location**: byte offset of the master block table in the debug information file;
   this value MUST be a multiple of 8, and the end of the table as determined implicitly by this value (i.e., this
-  value plus the product between the element size and the block count) MUST NOT go beyond the end of the file.
+  value plus the product between the element size and the number of entries) MUST NOT go beyond the end of the file.
 * **[Master block table][sect3.5] size**: number of entries in the [master block table][sect3.5].
   Unless the [master block table][sect3.5] contains unused entries (i.e., entries with their block type field set to
   the [invalid value][def-invalid]), this value will also be the number of blocks in the file.
 * **[Extension block descriptor][sect4.3] block index**: block index for the block that defines the identification
   strings that fully identify the block type for each [extension block type][sect3.6] index used by the file.
-  This block must have the [extension block descriptor][sect4.3] type.
+  This block MUST have the [extension block descriptor][sect4.3] type.
   If the file doesn't use any extension blocks, this field MAY be set to the [invalid block index][def-invalid].
 
 ### 3.5. Master block table
@@ -286,9 +337,11 @@ Applications that intend to consume a debug information file MUST process this t
 available to them; blocks MUST NOT be assumed to be in any particular order or layout in the file beyond what this
 table describes.
 
+The number of entries in the master block table is defined in the [header][sect3.4], along with the size of each entry
+(i.e., the element size) and the location of the table.
 The master block table has an alignment constraint of 8 and a minimum element size of 24.
 This means that, in the [header][sect3.4], both the location and the element size for the master block table MUST be
-set to multiples of 8, and the element size MUST be at least 24.
+set to multiples of 8, and its element size MUST be at least 24.
 Using a value greater than 24 for the element size is NOT RECOMMENDED; if a greater value is used, additional bytes in
 each entry MUST be treated as reserved fields and set to the [invalid value][def-invalid].
 
@@ -311,42 +364,42 @@ Master block table entries have the following layout:
   If an entry in the master block table is unused (for example, because the block in question was deleted from the
   file, but the implementation doesn't want to renumber all the blocks in the file), the block type for that entry
   MUST be set to the [invalid value][def-invalid].
-  In that case, the element size, size and location fields MUST be set to zero, and the remaining fields MUST be set
-  to the [invalid value][def-invalid].
+  In that case, the element size, block size and block location fields MUST be set to zero, and the remaining fields
+  MUST be set to the [invalid value][def-invalid].
 * **Element size**: size of each element in a block that contains a table.
-  If the block in question doesn't contain a table, this value MUST be set to zero.
-  On the other hand, if the block does contain a table, this value MUST be set to a size no smaller than the minimum
+  If the block in question doesn't contain a table, this field MUST be set to zero.
+  On the other hand, if the block does contain a table, this field MUST be set to a size no smaller than the minimum
   element size indicated for the block type in question, and it MUST be a multiple of the block type's alignment
   constraint.
   (This field therefore can also be used to determine if a block contains a table or not.)
 * **Block size**: size of the block, in bytes or in elements.
-  If the block in question doesn't contain a table (i.e., the element size field is zero), this field specifies the
+  If the block in question doesn't contain a table (i.e., if the element size field is zero), this field specifies the
   size in bytes of the block, and it MUST be a multiple of the block type's alignment constraint.
-  On the other hand, if the block does contain a table (i.e., the element size field is not zero), this field
-  specifies the number of entries in the table (which MAY be zero); the actual size (in bytes) of the block in that
-  case is the product of this field and the element size.
-  (The block size for blocks that contain a table is unconstrained by alignment because the element size is already
-  aligned.)
+  On the other hand, if the block does contain a table (i.e., if the element size field is not zero), this field
+  specifies the number of entries in the table (which MAY be zero); the actual size in bytes of the block in that case
+  is the product of this field and the element size.
+  (The value of the block size field for blocks that contain a table is unconstrained by alignment because the element
+  size is already aligned.)
 * **Block location**: byte offset of the block in the debug information file.
   This value indicates the position of the beginning of the block; the end of the block (as indicated by the value of
-  this field and the size determined by the element size and size fields) MUST NOT go beyond the end of the file.
+  this field and the size determined by the element size and block size fields) MUST NOT go beyond the end of the
+  file.
   The value of this field MUST be a multiple of the block type's alignment constraint.
 * **Linked block**: index of a block that this block is linked to.
-  Some blocks need to reference data from another block.
-  For example, a [string table block][sect4.2] contains a table of string offsets and lengths, but it needs to
-  reference the actual string contents from a [data block][sect4.1].
+  Some blocks need to reference data from another block: for example, a [string table block][sect4.2] contains a table
+  of string offsets and lengths, but it needs to reference the actual string contents from a [data block][sect4.1].
   This field contains the index of the block that the current block links to for this purpose; the meaning of this
   field is defined for each block type.
   If a block doesn't use the linked block field (either because it is meaningless for the its block type or because it
-  chooses not to link to any other block), this field MUST be set to the [invalid block index][def-invalid].
+  happens to not link to any other block), this field MUST be set to the [invalid block index][def-invalid].
   This field MUST NOT contain a nonexistent block index (other than the [invalid block index][def-invalid]).
 * **Reference**: indication of which object or location the block is referring to.
   The effective meaning and semantics of this field are defined for each block type.
+  (For example, an [address-to-line mapping table block][sect4.11] can use this field to indicate the starting address
+  for that block's mappings.)
   Most blocks don't use this field at all; in that case, this field MUST be set to the [invalid value][def-invalid].
-  (For example, an [address-to-line mapping table block][sect4.11] can use this field to indicate which addresses it
-  maps.)
-  Some blocks use this field to link another block; in that case, the behavior for this field is the same as for the
-  linked block field.
+  Some blocks use this field to link a second block, typically of a different type than the block linked through the
+  linked block field; in that case, the semantics for this field are the same as for the linked block field.
 
 ### 3.6. Extension blocks
 
@@ -355,7 +408,7 @@ point.
 By their nature, their semantics cannot be described by this document.
 Therefore, this section aims to describe the framework under which these blocks can be defined, detected and used.
 
-As with all other blocks, consumers MAY ignore any extension blocks they don't intend to process.
+As with all other blocks, consumers SHOULD ignore any extension blocks they don't intend to process.
 Therefore, extension blocks MUST NOT redefine the meaning of standard blocks in a way that is incompatible with their
 standard definition; implementations that ignore unknown extension blocks should be able to process the blocks they do
 know correctly.
@@ -417,9 +470,6 @@ The columns have the following meaning:
 
 * **ID**: numeric identifier for the block type, given in hexadecimal.
 * **Name**: name of the block type, as defined by this document.
-  The name consists of human-readable text, not an identifier suitable for use in code; implementations are encouraged
-  to define constants in their code with names as similar as possible to the ones listed in this document, suitably
-  abbreviated if needed.
   All the names in the table link to the corresponding section in this document defining that block type.
 * **Element**: minimum element size for block types that contain a table.
   If the corresponding block type doesn't contain a table, this column contains a long dash (—) instead.
@@ -447,14 +497,15 @@ The columns have the following meaning:
 |`$4002`|[Extension block descriptor][sect4.3]         |      8|    4| Yes  |
 |`$4003`|[Comment][sect4.4]                            |      —|    1|  No  |
 |`$4004`|[Source file table][sect4.5]                  |     12|    4| Rec. |
-|`$4005`|[ROM image information][sect4.6]              |      —|    8| Rec. |
+|`$4005`|[ROM image information][sect4.6]              |      —|    8| Yes  |
 |`$4006`|[File stack][sect4.7]                         |     12|    4|  No  |
 |`$4007`|[Section table][sect4.8]                      |     32|    4| Rec. |
 |`$4008`|[Symbol table][sect4.9]                       |     16|    4| Rec. |
 |`$4009`|[Line-to-address mapping table][sect4.10]     |     20|    4|  No  |
-|`$400A`|[Address-to-line mapping table][sect4.11]     |     20|    4|  No  |
+|`$400A`|[Address-to-line mapping table][sect4.11]     |     24|    4|  No  |
 |`$400B`|[Preferred address-to-line mappings][sect4.12]|     12|    4|  No  |
 |`$400C`|[Checksum table][sect4.13]                    |      8|    4|  No  |
+|`$400D`|[Unused memory area table][sect4.14]          |      8|    2| Rec. |
 
 ### 4.1. Data block type
 
@@ -468,7 +519,7 @@ This block exists to hold raw data that other blocks may need to reference.
 It is meaningless by itself; its only purpose is to act as a container for extra data in other blocks, particularly
 for blocks that contain tables.
 For example, a [string table block][sect4.2] will link to a data block to contain the actual string contents, since
-the string contents are variable size and therefore don't fit inside a fixed-size table element.
+the string contents have a variable size and therefore don't fit inside a fixed-size table element.
 
 As a result of the above, this block will mostly be used as a linked block in some other block.
 By itself, it has no semantics or constraints; however, generators SHOULD NOT generate data blocks that aren't used by
@@ -485,15 +536,21 @@ any other blocks in the file.
 String table blocks are used to assign numeric identifiers to [strings][def-strings].
 Every component in a debug information file that needs to reference a string (for instance, a filename) will do so
 through a string table.
-A file can contain any number of string table blocks; if multiple blocks need to reference a string table block, they
-MAY share the same string table block across as many of those blocks as desired.
 The numeric identifier for each string is its index into the string table block.
 (As usual, the first string in the table has index 0.)
 
+A file can contain any number of string table blocks.
+Other blocks that need to reference a string table block MAY use separate string table blocks for each block or share
+a string table, as preferred by the generator of the file.
+
 The table contains location and size information for each string, not the actual string contents.
 The string contents are contained in a [data block][sect4.1] that the string table block links to.
-The contents of each string MUST be valid UTF-8, without any embedded null characters ($00 bytes); consumers MUST NOT
-expect strings to end in a null terminator character.
+The contents of each string MUST be valid UTF-8, without any embedded null characters ($00 bytes); strings MUST follow
+the restrictions laid out in [the corresponding heading of the Definitions section][def-strings].
+
+Each string MUST end with a null character ($00 byte); this character is not considered part of the string's length.
+Consumers that intend to use this null character to mark the end of the string SHOULD verify its presence before doing
+so, and they SHOULD also verify that the string does not contain any embedded null characters.
 
 The table entries have the following format:
 
@@ -506,14 +563,15 @@ The table entries have the following format:
 * **Location**: offset into the linked [data block][sect4.1] where the [string][def-strings] begins; this value MUST
   be smaller than the linked block's size.
   Consumers MUST NOT expect any particular alignment for the location specified by this value.
-  If an entry is unused, this field MUST be set to [the invalid value][def-invalid] and the other fields set to zero;
+  If an entry is unused, this field MUST be set to the [invalid value][def-invalid] and the other fields set to zero;
   unused entries MUST NOT be referenced at all.
   (An unused entry isn't the same as the empty string.)
-  Empty strings MAY use any value (no larger than the size of the linked [data block][sect4.1]) for this field; if no
-  value is particularly meaningful, zero is recommended.
 * **Size**: size, in bytes, of the string contents.
-  The size MUST NOT cause the string to extend past the end of the linked [data block][sect4.1], and it MUST NOT
-  result in a partial UTF-8 encoding (e.g., a stray $C0 byte) at the end of the string.
+  If the location field is set to the [invalid value][def-invalid], this field MUST be set to zero.
+  Otherwise, this value indicates the number of bytes that make up the string's contents.
+  In that case, the sum of this field's value and the value of the location field determine the end of the string;
+  this sum MUST be smaller than the size of the linked [data block][sect4.1], and the byte at that offset MUST be a
+  null terminator ($00) byte.
 * **Maximum characters**: maximum number of codepoints encoded by the string.
   This value is meant as a hint for consumers that use some other representation (such as UTF-32) instead of UTF-8
   internally for their strings.
@@ -641,7 +699,7 @@ The table entries have the following format:
 * **Reference field**: optional [checksum table block][sect4.13]
 
 This block contains information about the actual ROM image file that the debug information file is built for.
-The file SHOULD NOT contain more than one block of this type.
+The file MUST NOT contain more than one block of this type.
 The information in this block can be used by consumers to verify that the debug information file they are handling
 matches the ROM image it is supposed to be for.
 
@@ -658,26 +716,29 @@ then the linked block field is OPTIONAL, and it MAY be set to the [invalid block
 Otherwise, the linked block field MUST point to a [string table block][sect4.2].
 
 Likewise, the reference field MAY contain a reference to a [checksum table block][sect4.13] used to specify the
-checksum for the ROM image (using an algorithm other than the one used for the ROM header).
-If the structure's other checksum field contains the [invalid index][def-invalid], the block's reference field is
-OPTIONAL, and it MAY be set to the [invalid block index][def-invalid] as well.
+checksum for the ROM image file (using an algorithm other than the one used for the ROM header) and the
+[overlay file][def-overlay](if any).
+If the structure's other checksum and overlay ROM image checksum fields both contain the [invalid index][def-invalid],
+the block's reference field is OPTIONAL, and it MAY be set to the [invalid block index][def-invalid] as well.
 Otherwise, the reference field MUST point to a [checksum table block][sect4.13].
 
 The structure has the following fields:
 
-|Offset|Size|Description        |
-|-----:|---:|:------------------|
-|     0|   4|Filename           |
-|     4|   4|File size          |
-|     8|   4|Other checksum     |
-|    12|   2|ROM checksum       |
-|    14|   1|Feature flags      |
-|    15|   1|Mapper code        |
-|    16|   4|Mapper string      |
-|    20|   4|Manufacturer code  |
-|    24|   8|Build timestamp    |
-|    32|   4|Game title         |
-|    36|   4|Toolchain ID string|
+|Offset|Size|Description               |
+|-----:|---:|:-------------------------|
+|     0|   4|Filename                  |
+|     4|   4|File size                 |
+|     8|   4|Other checksum            |
+|    12|   2|ROM checksum              |
+|    14|   1|Feature flags             |
+|    15|   1|Mapper code               |
+|    16|   4|Mapper string             |
+|    20|   4|Manufacturer code         |
+|    24|   8|Build timestamp           |
+|    32|   4|Game title                |
+|    36|   4|Toolchain ID string       |
+|    40|   4|Overlay ROM image filename|
+|    44|   4|Overlay ROM image checksum|
 
 The feature flags are a bit-packed field with the following subfields:
 
@@ -691,15 +752,17 @@ The feature flags are a bit-packed field with the following subfields:
 |    6|   2|Reserved                      |
 
 * **Filename**: [string table][sect4.2] index referencing a the string containing the name of the ROM image filename.
-  This MUST be a bare filename, without a path.
+  This MUST be a bare filename, without any path components; in other words, the filename MUST NOT contain any
+  forward slashes (`/`).
   If the filename is unknown or not available, this field MUST be set to the [invalid string index][def-invalid].
 * **File size**: size of the ROM image file, in bytes.
-  This is the exact size as output by the toolchain; if the file doesn't contain padding, this field will contain a
-  value not a multiple of the ROM bank size.
+  This is the exact size as output by the toolchain; it MAY be the size of the file before padding, in which case this
+  field can contain a value not a multiple of the ROM bank size.
+  It is also the size that is used to calculate the checksum referenced by the other checksum field.
   If the file size is not available, this field MAY be set to zero.
   However, generators SHOULD set this field (to a non-zero value) whenever possible.
-* **Other checksum**: this field contains an index into the [checksum table block][sect4.13] linked via this block's
-  reference field, referencing an entry that contains the checksum for the ROM image file.
+* **Other checksum**: index into the [checksum table block][sect4.13] linked via this block's reference field,
+  referencing an entry that contains the checksum for the ROM image file.
   (The field is named "other checksum" to tell it apart from the checksum contained in the ROM header, which requires
   the use of a specific simple algorithm.)
   This checksum is calculated over a file with the file size specified in the file size field; if the ROM image has
@@ -707,7 +770,8 @@ The feature flags are a bit-packed field with the following subfields:
   If the checksum is not known, or if calculating it would be prohibitively inefficient, this field is set to the
   [invalid index][def-invalid].
   If the block's reference field is set to the [invalid block index][def-invalid], indicating that there is no
-  [checksum table block][sect4.13] linked by this block, this field MUST be set to the [invalid index][def-invalid].
+  [checksum table block][sect4.13] linked by this block, this field MUST be set to the [invalid index][def-invalid];
+  likewise, if the file size field is set to zero, this field MUST be set to the [invalid index][def-invalid].
 * **ROM checksum**: this is the checksum contained in the ROM header, at offset $14E.
   This value is stored with its endianness flipped compared to the value stored in the ROM image, because the value in
   the ROM image is stored in big-endian format.
@@ -732,21 +796,22 @@ The feature flags are a bit-packed field with the following subfields:
       Possible values are 0 for DMG, 1 for SGB, 2 for CGB, or 3 for unknown.
     * The reserved bits have no meaning assigned to them by this version of the specification.
       Like any reserved field, it MUST be set to the [invalid value][def-invalid], which is an all-bits-set value.
-* **Mapper code**: single-byte code that identifies the mapper in use by the program.
+* **Mapper code**: single-byte code that identifies the cartridge mapper in use by the program.
   If the mapper is known and matches one of the well-known single-byte mapper codes, that code MUST be set as the
   value of this field, even if it doesn't match the value given in the ROM image header (at offset $147).
   In this case, the mapper code unknown flag (in the feature flags field) MUST be cleared.
   Otherwise, the mapper code unknown flag MUST be set, and this value SHOULD be set to the single-byte mapper code
   found at offset $147 in the ROM image header if possible.
-* **Mapper string**: [string table][sect4.2] index referencing a string that describes the mapper in use by the
-  program.
+* **Mapper string**: [string table][sect4.2] index referencing a string that describes the cartridge mapper in use by
+  the program.
   This SHOULD be a machine-parsable, human-readable string that describes the components of the mapper in question.
   (For example, this string could be set to a value like `MBC3+TIMER+BATTERY`.)
   If the mapper information is not available, this field MUST be set to the [invalid string index][def-invalid].
-* **Manufacturer code**: four-character code that identifies the program in question, typically used for licensed
-  games.
+* **Manufacturer code**: 4-byte code that identifies the program in question, typically used for licensed games.
+  This code usually represents four ASCII characters; however, the code is treated as a 4-byte integer for the
+  purposes of this field, regardless of whether it actually represents ASCII characters or not.
   This value is found in the ROM image header at offset $13F; note that the value as a 4-byte integer will be parsed
-  in little-endian format (so, for instance, a manufacturer code of `ABCD` would be read as $44434241).
+  in little-endian form (so, for instance, a manufacturer code of `ABCD` would be read as $44434241).
   If the manufacturer code invalid flag (in the feature flags field) is set, this field is meaningless and SHOULD be
   set to the [invalid value][def-invalid]; consumers MUST ignore this field if that flag is set.
 * **Build timestamp**: timestamp when the ROM image was last built or updated.
@@ -754,7 +819,8 @@ The feature flags are a bit-packed field with the following subfields:
   scaled up by 1,000,000).
   If the build timestamp is unknown, this field MUST be set to the [invalid value][def-invalid].
 * **Game title**: [string table][sect4.2] index referencing a string that identifies the title of the game or program.
-  Whenever possible, this SHOULD be a copy of the string stored in the ROM image header, at offset $134.
+  Whenever possible, this SHOULD be a copy of the string stored in the ROM image header, at offset $134; trailing
+  spaces MAY be removed from that string.
   When this is the case, the external title flag (in the feature flags field) MUST be cleared.
   Otherwise, if that flag is set, the game title can be any user-supplied string that identifies the game or program.
   If the game title is not available, this field MUST be set to the [invalid string index][def-invalid].
@@ -766,6 +832,23 @@ The feature flags are a bit-packed field with the following subfields:
   generate the same value for this field.
   If the toolchain is unknown, or if it is configured not to identify itself, this field MUST be set to the
   [invalid string index][def-invalid].
+* **Overlay ROM image filename**: [string table][sect4.2] index referencing a string containing the filename of the
+  [overlay file][def-overlay], if any.
+  If an overlay file was not used to build the ROM image file, this field MUST be set to the
+  [invalid string index][def-invalid].
+  Otherwise, this field SHOULD be set to the index of a string containing the filename and relative path of that file.
+  The filename referenced by this string is subject to the same rules and constraints as the filename field of a
+  [source file table block][sect4.5].
+  Consumers MAY attempt to locate a debug information file for a file referenced this way through whatever mechanisms
+  they implement to locate these files.
+* **Overlay ROM image checksum**: index into the [checksum table block][sect4.13] linked via this block's reference
+  field referencing an entry that contains the checksum for the [overlay file][def-overlay].
+  If the overlay ROM image filename field is set to the [invalid string index][def-invalid] or this block's reference
+  field is set to the [invalid block index][def-invalid], this field MUST be set to the [invalid index][def-invalid]
+  as well.
+  Otherwise, this field MAY be set to the index of the checksum for the [overlay file][def-overlay].
+  If the checksum is not known, or if calculating it would be prohibitively inefficient, this field is set to the
+  [invalid index][def-invalid].
 
 ### 4.7. File stack block type
 
@@ -853,6 +936,7 @@ Otherwise, the corresponding linked block MUST point to a block of the correct t
 
 This block contains a table where each entry represents a section.
 Each section has a name; sections SHOULD have unique and non-empty names.
+Sections that are overlaid onto one another, with their section kind subfield set to 3, MAY also share a name.
 
 The table entries have the following format:
 
@@ -863,8 +947,7 @@ The table entries have the following format:
 |     8|   2|Bank number                              |
 |    10|   2|Starting address                         |
 |    12|   2|Size                                     |
-|    14|   1|Flags                                    |
-|    15|   1|Reserved                                 |
+|    14|   2|Flags                                    |
 |    16|   4|ROM image offset                         |
 |    20|   4|File                                     |
 |    24|   4|Line number                              |
@@ -872,12 +955,15 @@ The table entries have the following format:
 
 The flags are a bit-packed field with the following subfields:
 
-|Start|Bits|Description            |
-|----:|---:|:----------------------|
-|    0|   4|Alignment requirement  |
-|    4|   2|Section kind           |
-|    6|   1|Multiple locations flag|
-|    7|   1|Autogenerated flag     |
+|Start|Bits|Description                |
+|----:|---:|:--------------------------|
+|    0|   5|Alignment requirement      |
+|    5|   1|Additional constraints flag|
+|    6|   2|Bank selection requirement |
+|    8|   2|Section kind               |
+|   10|   1|Multiple locations flag    |
+|   11|   1|Autogenerated flag         |
+|   12|   4|Reserved                   |
 
 * **Section name**: index into the linked [string table block][sect4.2] indicating the name of the section.
   If the section has no name, this field MAY be set to the [invalid string index][def-invalid].
@@ -886,9 +972,9 @@ The flags are a bit-packed field with the following subfields:
   This is a short string that describes the kind of section it is, such as `ROM0` or `HRAM`; possible values for this
   field are defined by the toolchain that builds the ROM image.
   If the section has no type (for example, because the toolchain doesn't support section types in the first place),
-  this field MAY be set to the [invalid string index][def-invalid].
+  this field MUST be set to the [invalid string index][def-invalid].
 * **Bank number**: bank number for the section's starting address.
-  If the section's starting address is in unbanked memory, this field MUST be set to zero.
+  If the section's starting address is in unbanked memory, this field SHOULD be set to zero.
 * **Starting address**: absolute address of the first byte of the section.
   If the section's size is zero (i.e., the section is empty), this field SHOULD be set to the address the first byte
   of the section would have if the section wasn't empty.
@@ -901,9 +987,27 @@ The flags are a bit-packed field with the following subfields:
       starting address MAY be non-zero: for example, a section that requests an alignment of 4 bytes away from a
       multiple of 8 bytes would have a value of 3 for this field, but the lower 3 bits of the starting address would
       be set to 4.
-      If the alignment requirement of the section is not known, this field must be set to 15, which is the
-      [invalid value][def-invalid] for a field of this size.
-      A value of 15 MUST NOT be interpreted as an actual alignment requirement.
+      (The starting address field can therefore be used to determine that offset.)
+      If a section's starting address is fixed, it has an alignment requirement of 16, as such a placement constrains
+      all bits in the starting address.
+      If the alignment requirement of the section is not known, it MUST be set to the [invalid value][def-invalid],
+      which is an all-bits-set value.
+      Values greater than 16 other than the [invalid value][def-invalid] are considered reserved for this version of
+      the specification and MUST NOT be used for this subfield.
+    * **Additional constraints flag**: if set, it indicates that the section's placement is defined, in whole or in
+      part, by constraints that cannot be represented in this table's fields.
+      In other words, the section's placement has constraints beyond the ones represented by this entry.
+    * **Bank selection requirement**: value that describes the constraints placed on the section's bank number.
+      This field may have the following values:
+        * **0 (any)**: indicates that the bank number has no constraints.
+          This implies that the toolchain was free to place the section in any valid bank.
+        * **1 (fixed)**: indicates that the section's bank number is fixed.
+        * **2 (unbanked)**: indicates that the section belongs to an unbanked region of memory, and therefore no bank
+          number selection is possible.
+          The bank number field SHOULD be set to zero in this case.
+        * **3 (unknown)**: indicates that the constraints placed on the bank number are not known to the generator.
+          This value SHOULD also be used if the constraints on the bank number cannot be represented by any other
+          possible value of this subfield.
     * **Section kind**: value that describes the type of section represented by this entry.
       This field may have the following values:
         * **0 (text)**: represents a section of code or data contained in the ROM image.
@@ -931,8 +1035,8 @@ The flags are a bit-packed field with the following subfields:
       requested by the source code.
       Sections which have this flag set MUST have the multiple locations flag cleared, and the file and line number
       fields set to the [invalid value][def-invalid].
-* The reserved field has no meaning assigned to it by this version of the specification.
-  Like all reserved fields, it MUST be set to the [invalid value][def-invalid].
+    * The reserved field has no meaning assigned to it by this version of the specification.
+      Like all reserved fields, it MUST be set to the [invalid value][def-invalid], which is an all-bits-set value.
 * **ROM image offset**: offset into the ROM image file where this section begins.
   For sections with a section kind value of 2 or 3, this field is meaningless, and it SHOULD be set to the
   [invalid value][def-invalid].
@@ -1017,9 +1121,7 @@ The flags are a bit-packed field with the following subfields:
   If the address flag and the banked symbol flag are both set, the symbol represents a banked address, and this field
   contains the bank for that address.
   If the address flag is set, but the banked symbol flag is cleared, the symbol represents an unbanked address; in
-  that case, this field is meaningless and MUST be set to zero.
-  (Zero is used instead of the [invalid value][def-invalid] to maximize compatibility with implementations that treat
-  all addresses as banked.)
+  that case, this field SHOULD be set to zero.
   If the address flag is cleared, the symbol represents a 4-byte integer; in that case, this field contains the upper
   16 bits of that integer.
 * **Section**: index into the linked [section table block][sect4.8] indicating the section that the symbol belongs to.
@@ -1044,7 +1146,7 @@ The flags are a bit-packed field with the following subfields:
       for mixed or unknown contents.
     * **Boot ROM flag**: if set, it indicates that the symbol's address represents an address in the boot ROM.
       If this flag is set, the address flag MUST be set, the banked symbol flag MUST be cleared, and the bank field
-      MUST be set to zero; the value field SHOULD contain an address in boot ROM space.
+      SHOULD be set to zero; the value field SHOULD contain an address in boot ROM space.
     * **Address flag**: if set, it indicates that the symbol represents an address.
       Otherwise, the symbol represents a 4-byte integer, not an address.
       If this flag is cleared, the size field MUST be set to zero, the invalid size flag MUST be set, the boot ROM and
@@ -1052,8 +1154,9 @@ The flags are a bit-packed field with the following subfields:
       to the [invalid index value][def-invalid].
       If this flag is cleared, the value field contains the lower 16 bits of the symbol's value, and the bank field
       contains the upper 16 bits of that value.
-    * **Banked symbol flag**: if set, it indicates that the symbol is banked.
-      Otherwise, the symbol is unbanked; in that case, the bank field is meaningless and MUST be set to zero.
+    * **Banked symbol flag**: as long as the address flag is set, if this flag is also set, it indicates that the
+      symbol is banked.
+      Otherwise, the symbol is unbanked; in that case, the bank field SHOULD be set to zero.
       If the address flag is cleared, this flag is meaningless and MUST be cleared as well.
     * **Invalid size flag**: if set, it indicates that the size field contains a special value, not the size of an
       object.
@@ -1064,6 +1167,11 @@ The flags are a bit-packed field with the following subfields:
   by this version of the specification.
   Like all reserved fields, they MUST be set to the [invalid value][def-invalid], which is an all-bits-set value in
   all cases.
+
+The value and bank fields, due to their placement and width, can also be interpreted as a single (correctly aligned)
+4-byte field.
+This is particularly useful when the address flag is cleared: in that case, the 4-byte field made up of the value and
+bank fields will contain the value of the symbol.
 
 ### 4.10. Line-to-address mapping table block type
 
@@ -1168,7 +1276,7 @@ The table entries have the following format:
   If the size field is zero, this is the starting address that the lines in question would map to if the entry had a
   non-zero size.
 * **Bank number**: bank number for the starting address referenced by the previous field.
-  If that address lies in unbanked memory, this field MUST be set to zero.
+  If that address lies in unbanked memory, this field SHOULD be set to zero.
 * **Size**: number of bytes that the lines referenced by the entry map to.
   This field SHOULD NOT be set to zero except in the case mentioned in rule 7 of the logical program order rules laid
   out above.
@@ -1196,7 +1304,7 @@ The table entries have the following format:
 ### 4.11. Address-to-line mapping table block type
 
 * **Numeric type identifier**: $400A
-* **Element size**: 20 bytes
+* **Element size**: 24 bytes
 * **Alignment constraint**: 4 bytes
 * **Linked block field**: [file stack block][sect4.7]
 * **Reference field**: starting address and bank (see below)
@@ -1205,6 +1313,7 @@ This block maps a range of addresses to the source code lines that represent tho
 It is the inverse of the [line-to-address mapping table][sect4.10] block type.
 An address-to-line mapping block MUST map a single contiguous range of addresses to source code lines; the ranges
 mapped by any two such blocks in the file MUST NOT overlap.
+The block MUST NOT be empty: the table MUST have at least one entry.
 The linked block is a [file stack block][sect4.7], linked through the linked block field, which is used to specify the
 file that each address maps to.
 
@@ -1216,8 +1325,8 @@ Generators SHOULD NOT split sections across multiple address-to-line mapping tab
 The reference field contains the starting address for the range mapped by the block: the upper 16 bits determine the
 bank and the lower 16 bits determine the address within the bank.
 All addresses mapped by the block MUST belong to the same bank.
-If the mapped region of memory is unbanked, the upper 16 bits of the reference field MUST be set to zero and all
-addresses mapped by the block MUST be in unbanked regions of memory.
+If the mapped region of memory is unbanked, the upper 16 bits of the reference field SHOULD be set to zero and all
+addresses mapped by the block MUST be in the same unbanked region of memory.
 (The final address of the range can be determined by inspecting the block.)
 The address determined by the reference field MUST NOT fall within the range mapped by any other address-to-line
 mapping block; this condition is sufficient to prevent overlaps, since, if two ranges overlap, at least one of their
@@ -1281,7 +1390,9 @@ The table entries have the following format:
 |     4|   4|File            |
 |     8|   4|Line number     |
 |    12|   4|Line count      |
-|    16|   4|Included entries|
+|    16|   2|Starting column |
+|    18|   2|Ending column   |
+|    20|   4|Included entries|
 
 * **Starting address**: starting address for the range of addresses referenced by this entry.
   This address MUST follow all the rules laid out above.
@@ -1294,8 +1405,8 @@ The table entries have the following format:
 * **File**: index into the linked [file stack block][sect4.7] indicating the file that this entry maps to.
   This field MAY be set to the [invalid index][def-invalid] if this entry corresponds to a range of addresses that
   doesn't map to any source code lines.
-  In that case, the line number field MUST be set to the [invalid value][def-invalid] as well, and the line count
-  field MUST be set to zero.
+  In that case, the line number, starting column and ending column fields MUST be set to the
+  [invalid value][def-invalid] as well, and the line count field MUST be set to zero.
 * **Line number**: initial line number that this entry maps to.
   The first line of the file is line 1.
   If the file field is set to the [invalid index][def-invalid], this field MUST also be set to the
@@ -1308,8 +1419,28 @@ The table entries have the following format:
   Otherwise, this field MUST NOT be set to zero, and the last line that the entry maps to (calculated as the sum of
   the line number field and this field minus one) MUST NOT be greater than the number of lines in the file, as defined
   for the field above.
-  If the line number field is set to zero, this field SHOULD be set to one.
+  If the line number field is set to zero, this field SHOULD be set to 1.
   This field MUST NOT be set to the [invalid value][def-invalid].
+* **Starting column**: starting column of the code that this entry maps to; this is a column in the line referenced by
+  the initial line number field.
+  If the file or line number fields are set to the [invalid value][def-invalid], this field MUST be set to the
+  [invalid value][def-invalid] as well.
+  Otherwise, this field MAY be set to a number indicating the column position where the code referenced by this entry
+  begins; the first character of the line is considered to be column 1, and columns go up by 1 for each printable
+  character in the line.
+  (This means that wide characters such as horizontal tabulations are still considered to take up one column.)
+  Column 0 can be used to indicate any special code being inserted implicitly at the beginning of the line.
+  If column information is not available, this field MUST be set to the [invalid value][def-invalid].
+* **Ending column**: ending column of the code that this entry maps to; this is a column in the last line implied by
+  the line number and line count fields.
+  (This field is inclusive: the column indicated by this field is included in the range.)
+  If the file or line number fields are set to the [invalid value][def-invalid], this field MUST be set to the
+  [invalid value][def-invalid] as well.
+  Otherwise, if the line count field is set to a value less than 2, this field MUST NOT be set to a value smaller than
+  the starting column field's value.
+  If column information is not available, this field MUST be set to the [invalid value][def-invalid].
+  This field MAY be set to the [invalid value][def-invalid] even if the starting column field isn't set that way; this
+  indicates that only the starting column for the code referenced by this entry is known, but not the exact range.
 * **Included entries**: number of entries in this entry's included span.
   If this entry does not include other entries, as defined in rule 4 of the rules laid out above, this field MUST be
   set to zero.
@@ -1337,7 +1468,7 @@ Each block of this type MUST map an entire bank or an entire region of unbanked 
 (This allows consumers to quickly determine if a block of this type is available for any given location in memory.)
 The reference field contains the starting address for the bank or region; the lower 16 bits contain the address and
 the upper 16 bits contain the bank number.
-If the mapped region of memory is unbanked, the upper 16 bits of the reference field MUST be set to zero.
+If the mapped region of memory is unbanked, the upper 16 bits of the reference field SHOULD be set to zero.
 If the mapped region of memory is banked, all addresses referenced by the block belong to the same bank.
 A file MUST NOT contain more than one block of this type with the same value in its reference field.
 
@@ -1406,7 +1537,7 @@ Each checksum algorithm is identified by a 2-byte numeric identifier.
 Valid algorithms are listed in the following table, along with the size expected by each one of them; these algorithms
 are defined in [the corresponding annex][annexA].
 This version of the specification does not contain any provisions for user-defined algorithms; numeric identifiers not
-listed in this table MUST NOT be used.
+listed in this table MUST NOT be used, with the exception of the [invalid value][def-invalid] as described below.
 
 |  ID   |Name                      |Size|
 |:-----:|:-------------------------|---:|
@@ -1430,15 +1561,113 @@ The table entries have the following format:
 |     4|   4|Location   |
 
 * **Algorithm**: numeric identifier of the algorithm used to calculate the checksum.
-  This value MUST be one of the numeric identifiers listed in the table above; values not listed in that table MUST
-  NOT be used.
-  In particular, this field MUST NOT be set to the [invalid value][def-invalid].
+  This value MUST be either the [invalid value][def-invalid] or one of the numeric identifiers listed in the table
+  above; values (other than the [invalid value][def-invalid]) not listed in that table MUST NOT be used.
+  If this field is set to the [invalid value][def-invalid], it indicates that this entry is unused; in that case, the
+  size field MUST be set to zero, the location field MUST be set to the [invalid value][def-invalid], and this entry
+  MUST NOT be referenced by any other block.
 * **Size**: size of the checksum data, in bytes.
   This value MUST match the size expected by the algorithm.
+  If the algorithm field is set to the [invalid value][def-invalid], this field MUST be set to zero.
 * **Location**: offset into the linked [data block][sect4.1] where the checksum data is found.
-  This value MUST be smaller than the linked block's size, and the combination of this field and the size field MUST
-  NOT cause the checksum data to extend beyond the end of the linked block.
+  If the algorithm field is set to the [invalid value][def-invalid], this field MUST be set to the
+  [invalid value][def-invalid] as well.
+  Otherwise, this value MUST be smaller than the linked block's size, and the combination of this field and the size
+  field MUST NOT cause the checksum data to extend beyond the end of the linked block.
   Consumers MUST NOT expect any particular alignment for the location specified by this value.
+
+### 4.14. Unused memory area table block type
+
+* **Numeric type identifier**: $400D
+* **Element size**: 8 bytes
+* **Alignment constraint**: 2 bytes
+* **Linked block field**: not used (set to [invalid][def-invalid])
+* **Reference field**: not used (set to [invalid][def-invalid])
+
+This block describes unused portions of the memory map in the program image, as known to the generator.
+An unused portion of memory is a location in memory that the program is not supposed to access or use for any purpose;
+for example, a portion of the ROM image that has been filled with a dummy value and does not contain any code or data.
+The file SHOULD NOT contain more than one block of this type.
+
+Each entry in the table describes a single contiguous area of memory that is not used by the program.
+The ranges described by these entries MUST NOT overlap; if the file contains more than one block of this type, entries
+in any of those blocks MUST NOT overlap with entries in another block.
+All addresses contained in the range referenced by a single entry MUST belong to the same bank; if the address range
+falls in an unbanked region of memory, all addresses in that range MUST belong to the same unbanked region of memory.
+
+The table entries have the following format:
+
+|Offset|Size|Description     |
+|-----:|---:|:---------------|
+|     0|   2|Starting address|
+|     2|   2|Bank            |
+|     4|   2|Size            |
+|     6|   1|Fill value      |
+|     7|   1|Flags           |
+
+The flags are a bit-packed field with the following subfields:
+
+|Start|Bits|Description      |
+|----:|---:|:----------------|
+|    0|   2|Fill pattern type|
+|    2|   2|Access types     |
+|    4|   4|Reserved         |
+
+* **Starting address**: starting address of the range defined by this entry.
+* **Bank**: bank number for the range defined by this entry; each range MUST be fully contained within a single bank.
+  If the starting address falls in an unbanked region of memory, the range MUST be fully contained within that region
+  of memory and this field SHOULD be set to zero.
+* **Size**: size of the range defined by this entry, in bytes.
+  This field MUST NOT be set to zero.
+  The range defined by this field and the starting address field MUST be fully contained within a single region of
+  memory.
+* **Fill value**: byte that is repeated throughout the range defined by this entry to fill it.
+  This field is only meaningful if the field pattern type field is set to 0; otherwise, this field has no meaning and
+  SHOULD be set to the [invalid value][def-invalid].
+* **Flags**: bit-packed field containing the following subfields:
+    * **Fill pattern type**: value describing the way the contents of the range defined by this entry are filled.
+    This field may have the following values:
+        * **0 (byte)**: the range is filled with a single byte repeated throughout.
+          The fill value field indicates the value of that byte.
+        * **1 (overlaid)**: the range's contents are determined by the [overlay file][def-overlay].
+          This value MUST NOT be used unless an [overlay file][def-overlay] was used to build the ROM image file.
+          For regions of memory mapped to ROM, this value indicates that the contents of this range are defined by the
+          contents of the [overlay file][def-overlay]; for other regions of memory, this value indicates that the
+          layout of this range is defined by the program contained in the [overlay file][def-overlay].
+          This value also indicates that the range defined by this entry MAY be in use: the range is not necessarily
+          unused; rather, it is defined by the [overlay file][def-overlay].
+        * **2 (uninitialized)**: the range is not filled; it is mapped to regions of memory that contain undefined
+          data.
+          This value MUST NOT be used for regions of memory mapped to ROM, as those regions are always filled with
+          data from the ROM image.
+        * **3 (other)**: the range is filled in some way that is not described by the values above.
+          This value can indicate that there is a fill pattern that is more complex than a single repeated byte, or
+          that the fill pattern (if any) is unknown.
+    * **Access types**: value that indicates the ways that the program can access the range.
+      Consumers MAY use this information in any way they deem fit.
+      This field may have the following values:
+        * **0 (none)**: no access.
+          This value indicates that the program will not access the range at all: it will not perform any reads or
+          writes to addresses in it, and it will not execute code from it.
+          All accesses to the range SHOULD be considered invalid.
+        * **1 (write)**: write-only access.
+          This value indicates that the program may perform writes to addresses in the range, but it will not perform
+          reads or execute code from it.
+          Writes to the range are acceptable, but all other accesses (including read-modify-write operations) SHOULD
+          be considered invalid.
+          This value MAY be used for ranges of memory that are also used for memory-mapped cartridge signals (such as
+          banking registers), which could be written to in order to send a command to the cartridge, or for ranges of
+          writable memory that are initialized by the program even though they are unused.
+        * **2 (any)**: full access.
+          This value indicates that the program can perform reads or writes to addresses in the range or execute code
+          from it.
+          This value SHOULD NOT be used if the fill pattern type is set to a value other than 1, as it indicates that
+          the range is not actually unused.
+        * **3 (unknown)**: unknown access.
+          This value indicates that, even though the range is unused, the generator does not have enough information
+          about whether the program will actually access it, or what operations it will perform on it.
+    * The reserved field has no meaning assigned to it by this version of the specification.
+      Like all reserved fields, it MUST be set to the [invalid value][def-invalid], which is an all-bits-set value.
 
 ## 5. General constraints
 
@@ -1505,7 +1734,7 @@ number for the document:
   without changes, although perhaps with reduced functionality.
   Implementations MAY accept files with higher minor version numbers than expected, although perhaps with reduced
   functionality; implementations that do SHOULD check all [reserved fields][def-reserved] and enumeration values to
-  ensure that they are set as they expect; differences in these values indicate behavior they are not aware of.
+  ensure that they are set as they expect, as differences in these values indicate behavior they are not aware of.
   For a change to be considered compatible, it MUST follow the following rules:
     * If new fields are added to a structure, the [invalid value][def-invalid] for those fields MUST indicate
       semantics that are identical to the previous version without those fields.
@@ -1685,20 +1914,20 @@ The ones supported by this specification are:
 * **Byte sum**: simple sum of all the bytes in the data, as a 1-byte value.
   The checksum is the lower 8 bits of the sum of all individual bytes in the data; this is equivalent to adding all
   the bytes and handling overflows via wrap-around.
-* **2-byte sum**: sum of all the 2-byte values in the data; values are read in little-endian format.
+* **2-byte sum**: sum of all the 2-byte values in the data; values are read in little-endian form.
   This is equivalent to the byte sum, but handling the input two bytes at a time.
   If there is an odd number of bytes in the data, it is padded by appending a $00 byte at the end.
   The result of this checksum is a 2-byte value; it is stored in little-endian form.
-* **4-byte sum**: sum of all the 4-byte values in the data; values are read in little-endian format.
+* **4-byte sum**: sum of all the 4-byte values in the data; values are read in little-endian form.
   This is equivalent to the one above, but handling the input four bytes at a time.
   Input data is likewise padded to a multiple of four bytes by appending $00 bytes as needed.
 * **Game Boy header checksum**: sum of all the bytes in the data as a 2-byte value.
   This algorithm is supported because it is likely to be already implemented by implementations.
-  (Note that applying this algorithm to a ROM image without changes will not result in the ROM image's header checksum
+  (Note that applying this algorithm to a ROM image without changes will not result in the ROM image header's checksum
   because the ROM image already contains its own checksum.)
   The checksum is the lower 16 bits of the sum of all individual bytes in the data; this is equivalent to
   zero-extending all the bytes to 2-byte values and adding them all up, handling overflows via wrap-around.
-  Unlike in the ROM header, the checksum is stored as a little-endian value.
+  Unlike in the ROM image header, the checksum is stored as a little-endian value.
 
 ### A.2. CRC-32
 
@@ -1710,7 +1939,7 @@ of $FFFFFFFF and the result complemented.
 A practical implementation of this algorithm can be found in the [PNG specification][png], which uses it to verify the
 contents of its chunks.
 
-The result of this calculation is a 4-byte integer, which is stored in little-endian format.
+The result of this calculation is a 4-byte integer, which is stored in little-endian form.
 
 [itu-t-v42]: https://www.itu.int/rec/T-REC-V.42-200203-I/en
 [png]: http://www.libpng.org/pub/png/spec/1.2/PNG-CRCAppendix.html
@@ -1788,6 +2017,7 @@ The length of each checksum's byte string is given by the table of valid algorit
 [sect4.11]: #411-address-to-line-mapping-table-block-type
 [sect4.12]: #412-preferred-address-to-line-mappings-block-type
 [sect4.13]: #413-checksum-table-block-type
+[sect4.14]: #414-unused-memory-area-table-block-type
 [sect5]: #5-general-constraints
 [sect6]: #6-versioning
 [sect6.1]: #61-versioning-policy
@@ -1801,7 +2031,9 @@ The length of each checksum's byte string is given by the table of valid algorit
 [annexA.2]: #a2-crc-32
 [annexA.3]: #a3-adler-32-checksum
 [annexA.4]: #a4-hash-algorithms
+[def-image]: #rom-image-and-program-image
 [def-invalid]: #invalid-value
 [def-numbers]: #numbers
+[def-overlay]: #overlay-file
 [def-reserved]: #reserved-fields
 [def-strings]: #strings
