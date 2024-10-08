@@ -14,6 +14,34 @@ No copyright is claimed on this document; attribution is appreciated.
 
 * * *
 
+### Version 0.2.1 (8 October 2024)
+
+Repository tag: [v0.2.1](https://github.com/aaaaaa123456789/gb-debug-information/blob/v0.2.1/debuginfo.md)
+
+* Section "2. Introduction": improved the wording to clarify intent.
+* Section "3.4. Header": noted that the declared header size cannot be larger than the size of the file.
+* Section "4. Standard block types":
+    * Updated the minimum element sizes in accordance with changes to the corresponding sections.
+    * Added new block type to the table.
+* Section "4.5. Source file table block type":
+    * Noted that paths should be relative only if possible.
+    * Added an exception for source files that are not written by the user.
+* Section "4.6. ROM image information block type":
+    * Defined the correct handling for ROM images whose checksum (in the ROM header) doesn't match the data.
+    * Updated the definitions of the ROM checksum and ROM checksum invalid flag fields to match this change.
+    * Clarified the endianness of the ROM checksum field.
+    * Required the build timestamp field to ignore leap seconds.
+    * Noted that the invalid value is not a real build timestamp.
+    * Reinforced the requirement for the game title field to point to a valid string (i.e., no invalid UTF-8
+      sequences), noting the correct handling for ROM images that contain such sequences (as well as invalid or
+      control characters) in the game title in the ROM header.
+* Section "4.8. Section table block type": reworded introduction to account for unnamed sections.
+* Section "4.9. Symbol table block type": added a new field to indicate the parent of a symbol.
+* Section "4.13. Checksum table block type": added a new field to support multiple checksums for a file.
+* Section "4.15. Memory map block type": created new section for new block type.
+* Section "A.5. Checksum samples": created new section.
+* Minor editorial changes.
+
 ### Version 0.2.0 (8 October 2023)
 
 Repository tag: [v0.2.0](https://github.com/aaaaaa123456789/gb-debug-information/blob/v0.2.0/debuginfo.md)
